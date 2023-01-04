@@ -9,7 +9,6 @@
  *
  * IDENTIFICATION
  *	  src/backend/access/gist/gist.c
- *
  *-------------------------------------------------------------------------
  */
 #include "postgres.h"
@@ -191,8 +190,10 @@ gistinsert(Relation r, Datum *values, bool *isnull,
 
 
 /*
- * Place tuples from 'itup' to 'buffer'. If 'oldoffnum' is valid, the tuple
- * at that offset is atomically removed along with inserting the new tuples.
+ * Place tuples from 'itup' to 'buffer'. 
+ * 
+ * If 'oldoffnum' is valid, the tuple at that offset
+ * is atomically removed along with inserting the new tuples.
  * This is used to replace a tuple with a new one.
  *
  * If 'leftchildbuf' is valid, we're inserting the downlink for the page
@@ -265,6 +266,12 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 	 */
 	is_split = gistnospace(page, itup, ntup, oldoffnum, freespace);
 
+	/**
+	 * is_split:
+	 *   - True: not enough space, need to be split
+	 *   - False: enough space, just insert is fine
+	 */
+
 	/*
 	 * If leaf page is full, try at first to delete dead tuples. And then
 	 * check again.
@@ -294,7 +301,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 		 * Form index tuples vector to split. If we're replacing an old tuple,
 		 * remove the old version from the vector.
 		 */
-		itvec = gistextractpage(page, &tlen);
+		itvec = gistextractpage(page, &tlen); // Copy an index tuple
 		if (OffsetNumberIsValid(oldoffnum))
 		{
 			/* on inner page we should remove old tuple */

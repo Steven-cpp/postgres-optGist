@@ -2,6 +2,10 @@
 # Auxiliary files from local workflows, your preferred editor, etc. should
 # be ignored locally using $GIT_DIR/info/exclude or ~/.gitexclude.
 
+# ignore temp files
+.DS_Store
+
+
 # Global excludes across all subdirectories
 *.o
 *.obj

@@ -1,0 +1,13 @@
+{
+    "files.associations": {
+        "gistscan.h": "c",
+        "gist_private.h": "c",
+        "postgres.h": "c",
+        "amapi.h": "c",
+        "genam.h": "c",
+        "relcache.h": "c",
+        "tupdesc.h": "c",
+        "pg_attribute.h": "c",
+        "genbki.h": "c"
+    }
+}

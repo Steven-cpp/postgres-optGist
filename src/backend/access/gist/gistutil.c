@@ -367,7 +367,9 @@ gistgetadjusted(Relation r, IndexTuple oldtup, IndexTuple addtup, GISTSTATE *gis
 /*
  * Search an upper index page for the entry with lowest penalty for insertion
  * of the new index key contained in "it".
- *
+ * 
+ * @param[in] p: the upper starter node
+ * 
  * Returns the index of the page entry to insert into.
  */
 OffsetNumber

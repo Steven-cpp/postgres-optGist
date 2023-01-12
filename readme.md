@@ -145,6 +145,8 @@ GiST (Generalized Search Tree) 称为通用搜索树，它为各种类型的索�
 1. **Consistent:** This method lets the tree search correctly. Given a key **p** on a tree page, and user query **q**, the Consistent method should return **NO** if it is certain that both **p** and **q** cannot be true for a given data item. Otherwise it should return **MAYBE**.
 
    > ? **p** 为 true 的含义是什么
+   >
+   > -> 就好比自定义数据对象的比较操作
 
 2. **Union:** This method consolidates information in the tree. Given a set **S** of entries, this method returns a new key **p** which is true for all the data items below **S**. A simple way to implement **Union** is to return a predicate equivalent to the disjunction of the keys in **S**, i.e. "**p1** or **p2** or **p3** or...".
 
@@ -258,9 +260,11 @@ GiST 的作者在[Generalized Search Trees for Database Systems](https://pages.c
 
 
 
+
+
 1. 理解了 RLR-Tree 的论文与代码；
 2. 确定了将其整合至 PostgreSQL 中的思路，set `gistState->penaltyFn`；
-3. 阅读了 GiST 的 2 篇论文，理解了其
+3. 理解了 PostgreSQL 实现 R-Tree 的结构 (GiST)，阅读了多篇介绍该结构的 paper. 并且我已经将 PSQL 的代码 clone 了下来，最近正在进行调试，尝试实现我的整合方法。
 
 
 

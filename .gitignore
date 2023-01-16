@@ -36,6 +36,8 @@ win32ver.rc
 lib*dll.def
 lib*.pc
 
+logfile
+
 # Local excludes in root directory
 /GNUmakefile
 /config.cache

@@ -78,7 +78,7 @@ AdjustTree: 在插入结点时触发。如果插入后，当前结点的指针�
 | Motivation        | 1. 使用 learned indices 替换传统的索引结构 (e.g B-Tree) 往往能够取得不错的性能表现；<br />2. 但是这需要完全替换原有的结构和查询算法，遇到了很多实现上的困难；<br />3. 本文想在<u>不改变索引结构</u>的情况下，采用基于 RL 的方法，提高空间查找的效率。 |
 | Current Challenge | 1. 现有 R-tree 的各种 insert 和 split 操作得到的索引树在查询的速度上，都没有显著的优势；<br />2. 将 ChooseSubTree 和 Split 操作形式化为两个连续的 MDP 是相当困难的，如何定义每个过程的状态、动作和奖励信号呢？<br />3. 难以使用 RL 来找到最优的过程，因为当前的 good action 可能会由于之前的 bad action 而得到惩罚值。 |
 | Related Work      | 1. Learned Index<br />- data and query limited;<br />- not accurate;<br />- <u>cannot handle updates, or need to periodic rebuild</u>.<br />- replace index structure and query algorithm<br />2. Heuristic Strategies used in R-Tree<br />- no single index outperforms the others |
-| Method            | 通过基于 RL 的模型，确定如何建立 R-Tree<br />具体地，这是通过将 insert 和 split 操作形式化为两个连续的 MDP，再使用 RL 来最优化。这就需要定义 MDP 的 state, action, reward signal, transition.<br />**1. State**<br />对每个结点的子节点进行遍历，选取前 $k$ 个插入后面积增加量最少的子节点。并计算$\Delta Area$, $\Delta Peri$, $\Delta Ovlp$, $OR(R)$ 并以相应的最大值正则化，连接后作为该结点的状态向量；<br />**2. Action**<br />类似的，选取当前结点的 $k$ 个子节点构成其动作空间<br />**3. Reward Signal**<br />设计 1 个 reference tree (RT)，将所要插入的对象同时插入到 RT 和 RLR-Tree 中，以两者的*结点访问率 (node access rate)* 的差作为激励信号。 |
+| Method            | 通过基于 RL 的模型，确定如何建立 R-Tree<br />具体地，这是通过将 insert 和 split 操作形式化为两个连续的 MDP，再使用 RL 来最优化。这就需要定义 MDP 的 state, action, reward signal, transition.<br />**1. State**<br />对每个结点的子节点进行遍历，选取前 $k$ 个插入后面积增加量最少的子节点。并计算$\Delta Area$, $\Delta Peri$, $\Delta Ovlp$, $OR(R)$ 并以相应的最大值正则化，连接后作为该结点的状态向量；<br />**2. Action**<br />类似的，选取这 $k$ 个子节点构成其动作空间，在训练时遍历其中的所有结点；而测试时，给出 Q-Value 最大的结点作为 action.<br />**3. Reward Signal**<br />设计 1 个 reference tree (RT)，将所要插入的对象同时插入到 RT 和 RLR-Tree 中，以两者的*结点访问率 (node access rate)* 的差作为激励信号。 |
 | Baseline          |                                                              |
 | Highlight         |                                                              |
 | Future Challenge  |                                                              |
@@ -679,7 +679,99 @@ Datum penaltyRL(GISTENTERY* orig, GISTENTRY* add, float &penalty){
 }
 ```
 
-所以，我当前的目标是能够执行到这个位置，并在当前位置打上断点，理解各个参数的含义。
+**🚩目标 1:** 是要理解各个参数的含义，如何通过 `GISTENTRY` 数据结构计算出状态向量。
+
+#### 2) GistEntry
+
+为了实现 `penaltyRL()`，我又回溯了一遍该项目的源码，从而进一步确定了该函数的实现逻辑：
+
+1. **计算出状态向量 (`GetSortedInsertStates: RTree.cpp`)**
+
+   状态向量包括 4 个分量: 面积增量、周长增量、重合面积增量、结点使用率。在 RLR-Tree 的实现中，树的结点类型 `RTree` 定义了 `Area()` 和 `Perimeter()` 方法。而其父类 `Rectangle` 提供了 `Set()` 和 `Include()` ，返回与其他 rectangle 进行操作后的新 rectangle。从而能计算出面积与周长的增量。
+
+   重合面积指的是，新结点插入至当前结点后，当前结点与同级兄弟结点的重叠面积。计算两个 rectangle 的重叠面积即可。
+
+   结点使用率的定义式为: `node->entry_num / TreeNode::maximum_entry`.
+
+2. **获取最优 Action (`Test3: combined_model.py`)**
+
+   最优的 action 通过调用训练得到的 agent，传入上一步得到的计算向量得到。这里的网络是单层的线性神经网络，会返回传入的每个 action 的评分，返回评分最高的 action.
+
+   ```python
+   action = self.insertion_network.chooseAction(states)
+   ```
+
+   可以将神经网络的输出取反，作为返回的 penalty 值.
+
+**🚩目标 1.1:** 通过被插入结点和新结点的 `GISTENTRY` 数据结构，计算出面积、周长与重合面积的增量，以及结点的使用率。而该数据结构的定义如下：
+
+```c
+typedef struct GISTENTRY
+{
+	Datum			key;
+	Relation	rel;
+	Page			page;
+	OffsetNumber offset;
+	bool			leafkey; // whether it's a leaf node
+}
+```
+
+对于 R-Tree， `GistEntry.key` 应当包含了区间信息，但是我并不知道它的数据类型。在查阅了 [PG 中 R-Tree 的实现](https://gis.stackexchange.com/questions/263370/postgis-r-tree-why-does-it-exist-when-postgresql-already-implements-its-r-tree) 后，我找到了 `NDBOX`，定义了 1 个 $n$ 维的数组，对应各个维度的长度：
+
+```c
+typedef struct NDBOX
+{
+	int32		vl_len_;
+	unsigned int header;
+
+	/*
+	 * The lower left coordinates for each dimension come first, followed by
+	 * upper right coordinates unless the point flag is set.
+	 */
+	double		x[FLEXIBLE_ARRAY_MEMBER];
+} NDBOX;
+```
+
+例如点 $A(0, 1)$ 和 $B(3, 5)$ 分别作为对角构成的大小为 $3 \times 4$ 的 $2$  维包围盒线性表示为 $[0, 1, 3, 5]$. 从而如果 `ll` 的位置为 `i`，那么其对应的 `ur` 的索引应当为 `i + dim = i + 2`. 作者也提供了 `LL_CORD(2)` 与 `UR_CORD(2)` 的接口，可以直接使用，得到 LL 位置对应的 UR 坐标分量。
+
+我也找到了用于 R-Tree 的 `penalty` 函数，以面积增量作为 penalty：
+
+```c
+Datum
+g_cube_penalty(PG_FUNCTION_ARGS)
+{
+	GISTENTRY  *origentry = (GISTENTRY *) PG_GETARG_POINTER(0);
+	GISTENTRY  *newentry = (GISTENTRY *) PG_GETARG_POINTER(1);
+	float	   *result = (float *) PG_GETARG_POINTER(2);
+	NDBOX	   *ud;
+	double		tmp1,
+				tmp2;
+
+	ud = cube_union_v0(DatumGetNDBOXP(origentry->key),
+					   DatumGetNDBOXP(newentry->key));
+	rt_cube_size(ud, &tmp1);
+	rt_cube_size(DatumGetNDBOXP(origentry->key), &tmp2);
+	*result = (float) (tmp1 - tmp2);
+
+	PG_RETURN_FLOAT8(*result);
+}
+```
+
+**🚩目标 1.2:** 以该函数为基础计算出其他三个分量，分别为周长增量、重合面积增量、结点使用率。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

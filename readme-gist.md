@@ -592,7 +592,7 @@ And for B-Tree, the key is seperated across the entire tree, the internal node i
 
 #### 3) Page 结构
 
-[PG 中的 Page结构](https://www.jianshu.com/p/012643cfba25)
+[PG 中的 Page结构](https://www.jianshu.com/c/f69542bf8bae)
 
 
 
@@ -737,6 +737,10 @@ typedef struct NDBOX
 我也找到了用于 R-Tree 的 `penalty` 函数，以面积增量作为 penalty：
 
 ```c
+/*
+** The GiST Penalty method for boxes
+** As in the R-tree paper, we use change in area as our penalty metric
+*/
 Datum
 g_cube_penalty(PG_FUNCTION_ARGS)
 {
@@ -758,6 +762,81 @@ g_cube_penalty(PG_FUNCTION_ARGS)
 ```
 
 **🚩目标 1.2:** 以该函数为基础计算出其他三个分量，分别为周长增量、重合面积增量、结点使用率。
+
+​	**🚩目标 1.2.1:** 在此之前，我要先能运行到这个函数处，确保之前的假设都是正确的。这需要插入较多的数据，使得树的高度 >= 3. 我下载了 [Airline Sample Databse](https://postgrespro.com/docs/postgrespro/11/demodb-bookings-installation)，并按照它的指示创建了给定的数据库:
+
+```bash
+$HOME/postgres/pg14/bin/psql -f /Users/shiqi/Downloads/demo-small-en-20170815.sql -U postgres
+```
+
+```sql
+INSERT INTO airports_data VALUES('ZSQ', '{"en": "Seventeens Airport"}', '{"en": "Singapore"}', (point '(250.2, 125.1)'), 'Asia/China');
+```
+
+然而在插入该元组时，程序还是直接跳到了叶子结点，可能是因为元组数量较少，而一个结点能容纳的元组数量却很多。因此，两层就可以装下所有的 90 多条数据结点，不需要内部结点，叶子结点就可以完成 GiST 树的构建。
+
+为了增加层数，我选择调整 `FILLFACOTOR: gitst_private.h`，这个比例控制了结点的满载量。默认情况下，GiST 将这一常数设为 $90\%$，即仅当当前结点的容载量 > 90% 时，才会分裂结点。于是，我对该常数进行调整，设为 $15\%$，进一步观察 GiST 树的层数。
+
+```c
+#define GIST_DEFAULT_FILLFACTOR		15
+```
+
+但是，这样做的问题是仅仅在源代码中进行修改，是否真正影响了 build 后的程序呢？对这一问题需要进行以下探究：
+
+- [x] 源代码与编译后程序的关系，是否有共享的源文件？
+
+  -> 参考 CSAPP
+
+  并没有。在编译后，可执行文件就与源代码脱离了关系，仅依赖于 build 中的文件。源代码的修改并不影响可执行文件。在查阅了 Psql 的文档后，发现可以通过在创建索引时指定 `fillfactor` 的方式来调整该参数。
+
+  ```bash
+  CREATE INDEX xxx ON xxx WITH fillfactor=15;
+  ```
+
+  ```sql
+  # 1. 查看该table的属性以及索引信息
+  $ \d airports_data
+  # 2. 删除名称为xxx的索引
+  $ DROP INDEX airports_data_coordinates_idx;
+  # 3. 在cooidinate上创建索引，并指定fillfactor
+  $ CREATE INDEX ON airports_data USING gist(coordinates) WITH (fillfactor=15);
+  ```
+
+
+然而，即使指定了 `fillfactor`，在插入结点后，树的层数似乎仍然为 2. 看来，我还是要装上 `gevel` 这个工具，看每层的使用情况。但是，在安装该扩展 `make` 的时候，还是产生了文件找不到的问题。我原本以为需要先了解 makeFile 的原理，才能解决这一问题。但是在与其它可用的 Makefile 文件对比后，我发现 `gevel` 的 MakeFile 基本只有 1 处不同，没有定义 `top_builddir`。在增加该变量的定义，并引入 `Makefile.global` 后，按照 [在PostgreSQL里安装gevel拓展](https://www.lixf.cc/2022/01/08/install-gevel-in-postgres/) 中排除了部分编译错误后，代码编译成功，并顺利通过了以下的测试命令:
+
+```shell
+contrib % $HOME/postgres/pg14/bin/psql regression < gevel/gevel.sql
+SET
+BEGIN
+CREATE FUNCTION
+CREATE FUNCTION
+CREATE FUNCTION
+CREATE FUNCTION
+CREATE FUNCTION
+CREATE FUNCTION
+CREATE FUNCTION
+CREATE FUNCTION
+CREATE FUNCTION
+CREATE FUNCTION
+COMMIT
+```
+
+同时，在这一实验中，我也基本理解了 `make`, `makefile`, `cmake`, `make install` 的区别与意义：
+
+- `make`: 就是根据 `makeFile` 将源代码编译为二进制文件，例如将 `main.c` 编译为 `main.o`。在此阶段，还会完成链接操作，例如对于头文件引用的解析，这可能会生成 `dylib` 文件。
+
+  > 🔍 **链接阶段如何处理头文件 & dylib 的意义**
+  >
+  > 【TODO】看完 CSAPP Linking 后完成
+
+- `cmake`: 它是生成 build system 的工具，而 `make` 是 build system，指导编译器如何 build 你的代码。例如我们可以通过 cmake 生成特定平台的 makeFile，从而使得源代码具有跨平台的特性。
+
+- `make install`: 将编译好的二进制文件复制到目标安装位置，例如 `/bin` 目录.
+
+
+
+
 
 
 

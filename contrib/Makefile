@@ -22,6 +22,7 @@ SUBDIRS = \
 		earthdistance	\
 		file_fdw	\
 		fuzzystrmatch	\
+		gevel \
 		hstore		\
 		intagg		\
 		intarray	\

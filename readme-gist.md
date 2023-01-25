@@ -400,7 +400,7 @@ Covering Index: 查询的数据就包含在 index 中，不需要再索引 table
 
 Visibility Map: 标记了刚刚被改变的页面，从而无论事务的开始时间和隔离等级，该页面对所有事务都是可见的。
 
-🚩 **目标 1.3.2: 了解 PSQL 的语法**
+#### 2）PSql 语法
 
 在 retrieve 函数返回的自定义的数据类型时，要声明该对象的类型，例如使用 `from xxx as name(type1, type2, type3)`
 
@@ -411,6 +411,18 @@ where level = 1;
 ```
 
 我在这里要了解的重点是多维数据的存取方式，例如我们想创建一张存取二维数据点的表 `points`
+
+1. 开启 PG server (关闭同理)
+
+   ```bash
+   $HOME/postgres/pg14/bin/pg_ctl -D $HOME/postgres/pgdata -l logfile start
+   ```
+
+2. 登陆 PG 并打开 demo 数据库
+
+   ```bash
+   $HOME/postgres/pg14/bin/psql -p 5432 demo
+   ```
 
 1. 创建表
 
@@ -769,6 +781,42 @@ g_cube_penalty(PG_FUNCTION_ARGS)
 $HOME/postgres/pg14/bin/psql -f /Users/shiqi/Downloads/demo-small-en-20170815.sql -U postgres
 ```
 
+其中 `-U postgres` 指的是以 `postgres` 角色完成运行该文件。我们可以在 PG 命令行中通过 `\du` 查看系统中的角色和权限:
+
+```bash
+sample=# \du
+                                   List of roles
+ Role name |                         Attributes                         | Member of 
+-----------+------------------------------------------------------------+-----------
+ shiqi     | Superuser, Create role, Create DB, Replication, Bypass RLS | {}
+```
+
+可见，我们的系统中只存在 shiqi 这一唯一角色。所以，要将上述的指令修改为：
+
+```bash
+$HOME/postgres/pg14/bin/psql -f /Users/shiqi/Downloads/demo-small-en-20170815.sql -U shiqi -d sample
+```
+
+于是，我们通过角色 shiqi 进入了 sample 数据库，并创建了 `demo` 数据库。现在我们进入该数据库，并查看其中所有的 table:
+
+```bash
+demo=# \dt
+             List of relations
+  Schema  |      Name       | Type  | Owner 
+----------+-----------------+-------+-------
+ bookings | aircrafts_data  | table | shiqi
+ bookings | airports_data   | table | shiqi
+ bookings | boarding_passes | table | shiqi
+ bookings | bookings        | table | shiqi
+ bookings | flights         | table | shiqi
+ bookings | seats           | table | shiqi
+ bookings | ticket_flights  | table | shiqi
+ bookings | tickets         | table | shiqi
+(8 rows)
+```
+
+我们的目标是在一个 `point` 数据类型的 key 上建立 GiST 索引树，并使其层数 > 3. 于是，我选定了 `airports_data` 中的 `coordinates` 属性。
+
 ```sql
 INSERT INTO airports_data VALUES('ZSQ', '{"en": "Seventeens Airport"}', '{"en": "Singapore"}', (point '(250.2, 125.1)'), 'Asia/China');
 ```
@@ -803,7 +851,7 @@ INSERT INTO airports_data VALUES('ZSQ', '{"en": "Seventeens Airport"}', '{"en": 
   ```
 
 
-然而，即使指定了 `fillfactor`，在插入结点后，树的层数似乎仍然为 2. 看来，我还是要装上 `gevel` 这个工具，看每层的使用情况。但是，在安装该扩展 `make` 的时候，还是产生了文件找不到的问题。我原本以为需要先了解 makeFile 的原理，才能解决这一问题。但是在与其它可用的 Makefile 文件对比后，我发现 `gevel` 的 MakeFile 基本只有 1 处不同，没有定义 `top_builddir`。在增加该变量的定义，并引入 `Makefile.global` 后，按照 [在PostgreSQL里安装gevel拓展](https://www.lixf.cc/2022/01/08/install-gevel-in-postgres/) 中排除了部分编译错误后，代码编译成功，并顺利通过了以下的测试命令:
+然而，即使指定了 `fillfactor`，在插入结点后，树的层数似乎仍然为 2. 看来，我还是要装上 `gevel` 这个工具，看每层的使用情况。但是，在安装该扩展 `make` 的时候，还是产生了文件找不到的问题。我原本以为需要先了解 makeFile 的原理，才能解决这一问题。但是在与其它可用的 Makefile 文件对比后，我发现 `gevel` 的 MakeFile 基本只有 1 处不同，没有定义 `top_builddir`。在增加该变量的定义，并引入 `Makefile.global` 后，按照 [在PostgreSQL里安装gevel拓展](https://www.lixf.cc/2022/01/08/install-gevel-in-postgres/) 中排除了部分编译错误后，代码编译成功，并顺利在 `regression` 数据库中创建了这些函数:
 
 ```shell
 contrib % $HOME/postgres/pg14/bin/psql regression < gevel/gevel.sql
@@ -834,17 +882,62 @@ COMMIT
 
 - `make install`: 将编译好的二进制文件复制到目标安装位置，例如 `/bin` 目录.
 
+从而，编译整个项目的过程可以被解释为：先通过 `./configure` 定义安装位置及操作平台类型，生成 MakeFile 文件；接着 `make` 根据当前目录下的 makeFile，编译项目的源码，得到可执行的二进制文件，并进行链接操作，各个子目录下都产生了 `.o`, `.dylib` 的二进制文件；最后，通过 `make install` 将二进制文件复制到安装目录中，完成软件的安装。
 
+​	**🚩目标 1.2.2: 使用 gevel 调试 GiST 树，了解页面的数据结构分配** 
 
+在 `airports_data` 表中，我们首先试着以默认 `fillfacotr = 90` 建立 GiST 索引树：
 
+```sql
+CREATE INDEX ON airports_data USING gist(coordinates);
+```
 
+然后，我们用 `gevel` 来查看其页面数据的分配:
 
+```sql
+>>> select * from gist_stat('airports_data_coordinates_idx');
+gist_stat               
+---------------------------------------
+ Number of levels:                  1 +
+ Number of pages:                   1 +
+ Number of leaf pages:              1 +
+ Number of tuples:                 104+
+ Number of invalid tuples:  0         +
+ Number of leaf tuples:   104         +
+ Total size of tuples:     4588 bytes +
+ Total size of leaf tuples: 4588 bytes+
+ Total size of index:       8192 bytes+
+```
 
+接着，我们删除该索引，以 `fillfactor=15` 重新建立 GiST 索引树：
 
+```sql
+>>> DROP INDEX airports_data_coordinates_idx;
+DROP INDEX
+>>> CREATE INDEX ON airports_data USING gist(coordinates) WITH (fillfactor=15);
+CREATE INDEX
+```
 
+然后，再查看其页面数据分配：
 
+```sql
+>>> select * from gist_stat('airports_data_coordinates_idx');
+               gist_stat               
+---------------------------------------
+ Number of levels:                  1 +
+ Number of pages:                   1 +
+ Number of leaf pages:              1 +
+ Number of tuples:                 104+
+ Number of invalid tuples:  0         +
+ Number of leaf tuples:   104         +
+ Total size of tuples:     4588 bytes +
+ Total size of leaf tuples: 4588 bytes+
+ Total size of index:       8192 bytes+
+```
 
+结果还是不变，看来是数据集太小了，即使是最低的 fillfactor，也能在 level 1 装下所有的元素 (我们称根结点所在的高度为 level 0). 所以，我们要选用更大的数据集。但是，更大的数据集并没有增广机场的坐标，自始至终只有 104 个机场的坐标，因此我只能考虑通过脚本插入随机的坐标，自行增广数据。
 
+![image-20230125203939439](https://raw.githubusercontent.com/Steven-cpp/myPhotoSet/main/image-20230125203939439.png)
 
 
 

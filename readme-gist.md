@@ -400,14 +400,14 @@ Covering Index: 查询的数据就包含在 index 中，不需要再索引 table
 
 Visibility Map: 标记了刚刚被改变的页面，从而无论事务的开始时间和隔离等级，该页面对所有事务都是可见的。
 
-#### 2）PSql 语法
+#### 2) PSql 语法
 
 在 retrieve 函数返回的自定义的数据类型时，要声明该对象的类型，例如使用 `from xxx as name(type1, type2, type3)`
 
 ```sql
 select level, a 
-from gist_print('airports_coordinates_idx') as t(level int, valid bool, a box) 
-where level = 1;
+from gist_print('airports_coordinates_idx') as t(level int, valid bool, a box)
+    where level = 1;
 ```
 
 我在这里要了解的重点是多维数据的存取方式，例如我们想创建一张存取二维数据点的表 `points`
@@ -422,6 +422,12 @@ where level = 1;
 
    ```bash
    $HOME/postgres/pg14/bin/psql -p 5432 demo
+   ```
+
+1. 获取调试进程 ID
+
+   ```sql
+   SELECT pg_backend_pid();
    ```
 
 1. 创建表
@@ -482,7 +488,7 @@ But after talking with Alan, I feel better
 
 
 
-#### 2) GiST 中并行的实现
+#### 3) GiST 中并行的实现
 
 在一个完整的数据库系统
 
@@ -602,13 +608,13 @@ And for B-Tree, the key is seperated across the entire tree, the internal node i
 
 - section 12 concludes this paper with a summary.
 
-#### 3) Page 结构
+#### 4) Page 结构
 
 [PG 中的 Page结构](https://www.jianshu.com/c/f69542bf8bae)
 
 
 
-#### 4) Planner
+#### 5) Planner
 
 [How Planner Works?](https://www.postgresql.org/docs/current/planner-optimizer.html)
 
@@ -815,7 +821,27 @@ demo=# \dt
 (8 rows)
 ```
 
-我们的目标是在一个 `point` 数据类型的 key 上建立 GiST 索引树，并使其层数 > 3. 于是，我选定了 `airports_data` 中的 `coordinates` 属性。
+我们的目标是在一个 `point` 数据类型的 key 上建立 GiST 索引树，并使其层数 > 3. 使用 `\d <tablename>` 来查看该表的详细信息:
+
+```bash
+demo=# \d airports_data
+                Table "bookings.airports_data"
+    Column    |     Type     | Collation | Nullable | Default 
+--------------+--------------+-----------+----------+---------
+ airport_code | character(3) |           | not null | 
+ airport_name | jsonb        |           | not null | 
+ city         | jsonb        |           | not null | 
+ coordinates  | point        |           | not null | 
+ timezone     | text         |           | not null | 
+Indexes:
+    "airports_data_pkey" PRIMARY KEY, btree (airport_code)
+    "airports_data_coordinates_idx" gist (coordinates) WITH (fillfactor='15')
+Referenced by:
+    TABLE "flights" CONSTRAINT "flights_arrival_airport_fkey" FOREIGN KEY (arrival_airport) REFERENCES airports_data(airport_code)
+    TABLE "flights" CONSTRAINT "flights_departure_airport_fkey" FOREIGN KEY (departure_airport) REFERENCES airports_data(airport_code)
+```
+
+于是，我选定了 `airports_data` 中的 `coordinates` 属性。
 
 ```sql
 INSERT INTO airports_data VALUES('ZSQ', '{"en": "Seventeens Airport"}', '{"en": "Singapore"}', (point '(250.2, 125.1)'), 'Asia/China');
@@ -877,6 +903,8 @@ COMMIT
   > 🔍 **链接阶段如何处理头文件 & dylib 的意义**
   >
   > 【TODO】看完 CSAPP Linking 后完成
+  >
+  > 
 
 - `cmake`: 它是生成 build system 的工具，而 `make` 是 build system，指导编译器如何 build 你的代码。例如我们可以通过 cmake 生成特定平台的 makeFile，从而使得源代码具有跨平台的特性。
 
@@ -938,6 +966,41 @@ CREATE INDEX
 结果还是不变，看来是数据集太小了，即使是最低的 fillfactor，也能在 level 1 装下所有的元素 (我们称根结点所在的高度为 level 0). 所以，我们要选用更大的数据集。但是，更大的数据集并没有增广机场的坐标，自始至终只有 104 个机场的坐标，因此我只能考虑通过脚本插入随机的坐标，自行增广数据。
 
 ![image-20230125203939439](https://raw.githubusercontent.com/Steven-cpp/myPhotoSet/main/image-20230125203939439.png)
+
+ChatGPT 推荐使用 `psycopg2` 来连接 PG 数据库并插入数据，明天再来试试。
+
+​	**🚩目标 1.2.3: 使用 psycopg2 连接 PG 数据库，写脚本增广数据**
+
+在增加了 101 条数据后，表中有了 205 行，此时的 GiST 树已经多了一层，我们的目标已经达成，可以进行下一步的工作:
+
+```bash
+demo=# select * from gist_stat('airports_data_coordinates_idx');
+               gist_stat                
+----------------------------------------
+ Number of levels:                  2  +
+ Number of pages:                   3  +
+ Number of leaf pages:              2  +
+ Number of tuples:                 209 +
+ Number of invalid tuples:  0          +
+ Number of leaf tuples:   207          +
+ Total size of tuples:     9232 bytes  +
+ Total size of leaf tuples: 9132 bytes +
+ Total size of index:       24576 bytes+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

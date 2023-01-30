@@ -26,6 +26,7 @@
 #include "utils/lsyscache.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
+#include "utils/geo_decls.h"
 
 /*
  * Write itup vector to page, has no control of free space.
@@ -381,7 +382,7 @@ gistchoose(Relation r, Page p, IndexTuple it,	/* it has compressed entry */
 	OffsetNumber i;
 	float		best_penalty[INDEX_MAX_KEYS];
 	GISTENTRY	entry,
-				identry[INDEX_MAX_KEYS];
+				identry[INDEX_MAX_KEYS]; 	   /* build an entry of `it` */
 	bool		isnull[INDEX_MAX_KEYS];
 	int			keep_current_best;
 
@@ -452,13 +453,20 @@ gistchoose(Relation r, Page p, IndexTuple it,	/* it has compressed entry */
 			float		usize;
 			bool		IsNull;
 
-			/* Compute penalty for this column. */
+			/** Compute penalty for this column.  
+			 * `datum`: key of the index entry
+			 * `identry`: entry of parent node (null, 0) 
+			 * `entry`: entry at (p, i) ; i starts from 1
+			 *  如果这样就可以完成 GiST 自上而下的遍历,那么遍历的要点是在offsetNum.
+			 * 每个page的不同offset,均对应一个tuple.
+			 * -> 可以假定每个page对应一个node
+			*/
 			datum = index_getattr(itup, j + 1, giststate->leafTupdesc,
 								  &IsNull);
 			gistdentryinit(giststate, j, &entry, datum, r, p, i,
 						   false, IsNull);
 			usize = gistpenalty(giststate, j, &entry, IsNull,
-								&identry[j], isnull[j]);
+								&identry[j], isnull[j], p);
 			if (usize > 0)
 				zero_penalty = false;
 
@@ -722,10 +730,38 @@ gistFetchTuple(GISTSTATE *giststate, Relation r, IndexTuple tuple)
 	return heap_form_tuple(giststate->fetchTupdesc, fetchatt, isnull);
 }
 
+static void
+rt_box_union(BOX *n, const BOX *a, const BOX *b)
+{
+	n->high.x = float8_max(a->high.x, b->high.x);
+	n->high.y = float8_max(a->high.y, b->high.y);
+	n->low.x = float8_min(a->low.x, b->low.x);
+	n->low.y = float8_min(a->low.y, b->low.y);
+}
+
+static void
+rt_box_intersect(BOX *n, const BOX *a, const BOX *b)
+{
+	n->high.x = float8_min(a->high.x, b->high.x);
+	n->high.y = float8_min(a->high.y, b->high.y);
+	n->low.x = float8_max(a->low.x, b->low.x);
+	n->low.y = float8_max(a->low.y, b->low.y);
+}
+
+/**
+ * Calculate penalty of inserting `add` to `orig` using RLR-Tree method
+ * 
+ * @param giststate penaltyFn information needed for this op
+ * @param orig 	entry to be inserted
+ * @param add	insertion item
+ * @param p		the page(node) `orig` lies in, used to retreive brother entries
+ * 
+ */
 float
 gistpenalty(GISTSTATE *giststate, int attno,
 			GISTENTRY *orig, bool isNullOrig,
-			GISTENTRY *add, bool isNullAdd)
+			GISTENTRY *add, bool isNullAdd,
+			Page p)
 {
 	float		penalty = 0.0;
 
@@ -737,6 +773,46 @@ gistpenalty(GISTSTATE *giststate, int attno,
 						  PointerGetDatum(orig),
 						  PointerGetDatum(add),
 						  PointerGetDatum(&penalty));
+		// 1. Get merged box (the key insertion)
+		BOX* origbox = DatumGetBoxP(orig->key);
+		BOX* newbox = DatumGetBoxP(add->key); // new box is just a point
+		BOX  unionbox;
+		rt_box_union(&unionbox, origbox, newbox);
+		// 2. 	Calculate four component
+		float deltaArea, deltaCircum, deltaOverlap, utilRate;
+		float origLen = origbox->high.x - origbox->low.x;
+		float origHgt = origbox->high.y - origbox->low.y;
+		float unionLen = unionbox.high.x - unionbox.low.x;
+		float unionHgt = unionbox.high.y - unionbox.low.y;
+		// 2.1	delta area
+		/* [TODO] Multiplication Overflow Detection */
+		deltaArea = unionLen * unionHgt - origLen * origHgt;
+		// 2.2	delta circumference (just length + width for simplicity)
+		deltaCircum = unionLen - origLen + unionHgt - origHgt;
+		// 2.3 	delta overlap area
+		float origOlp = 0.0, unionOlp = 0.0;
+		for (OffsetNumber off = 0; off < PageGetMaxOffsetNumber(p); off++){
+			// 2.3.1 if brother tuple equals to orig, ignore
+			if (off == orig->offset) continue;
+			// 2.3.2 form `brobox` according to page and offset
+			ItemId iid = PageGetItemId(p, off);
+			IndexTuple broTuple = (IndexTuple) PageGetItem(p, iid);
+			bool isNull = false;
+			Datum datum = index_getattr(broTuple, 1, giststate->leafTupdesc, &isNull); // for index based on 1 key
+			BOX* brobox = DatumGetBoxP(datum);
+			// 2.3.3 accumulate origOverlap & unionOverlap
+			BOX origIntsctBox, unionIntsctBox;
+			rt_box_intersect(&origIntsctBox, origbox, brobox);
+			rt_box_intersect(&unionIntsctBox, &unionbox, brobox);
+			origOlp += (origIntsctBox.high.x - origIntsctBox.low.x) * (origIntsctBox.high.y - origIntsctBox.low.y);
+			unionOlp += (unionIntsctBox.high.x - unionIntsctBox.low.x) * (unionIntsctBox.high.y - unionIntsctBox.low.y);
+		}
+		deltaOverlap = unionOlp - origOlp;
+		// 2.4 	page utility rate
+		#define PAGESIZE	(BLCKSZ - MAXALIGN(sizeof(PageHeaderData) + sizeof(ItemIdData)))
+		utilRate = 1.0 - (float)PageGetFreeSpace(p)/PAGESIZE;
+		// 3. pass in state vector, get penalty
+		penalty = (float) box_penalty(origbox, newbox);
 		/* disallow negative or NaN penalty */
 		if (isnan(penalty) || penalty < 0.0)
 			penalty = 0.0;

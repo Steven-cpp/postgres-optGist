@@ -612,6 +612,48 @@ And for B-Tree, the key is seperated across the entire tree, the internal node i
 
 [PG 中的 Page结构](https://www.jianshu.com/c/f69542bf8bae)
 
+在计算 penalty 的过程中，比较 tricky 的一点是插入后的结点与其它 $k-1$ 个兄弟结点的重合面积。我需要探索能否通过 `GISTENTRY` 来找到该结点的兄弟结点、子结点、父结点。
+
+```c
+typedef struct GISTENTRY
+{
+	Datum			key;
+	Relation	rel;
+	Page			page;
+	OffsetNumber offset;
+	bool			leafkey; // whether it's a leaf node
+}
+```
+
+我现在只知道 `entry->key` 是 R-Tree 的键值，形如 `(a, b)` 的数据点。而对于其它的数据项:
+
+- `rel`:
+- `page`:
+- `offset`: 对应 page 中的 block
+
+遍历结点是在 `gistdoinsert(): gist.c` 中发生的。
+
+1. 从关系 `r` 的 buffer 的指定位置 (`blkno`) 获取磁盘中对应的 page；
+
+   `maxoff`: 页面上最高的 offset -> 页面上包含的 tuple 数
+
+   `freeSpace`: 该页面仍可以分配的空间
+
+   -> 索引树的每个结点都是一个 page，其中的每个 tuple 都通过 offset 来索引。最后一项的 offset 为 `PageGetMaxOffsetNumber(page)`. 从而我们只需要遍历父结点的所有 tuple，就能遍历到所有的兄弟结点，进而计算出重叠面积。
+
+2. `indexTuple` 就是键值；
+
+3. 如何将 indexTuple 转换为 GistEntry
+
+根据 page 和 offset 生成所在位置的 tuple，并获取其 key 值（叶子结点）的范式:
+
+````c
+ItemId iid = PageGetItemId(p, off);
+IndexTuple broTuple = (IndexTuple) PageGetItem(p, iid);
+bool isNull = false;
+Datum datum = index_getattr(broTuple, 1, giststate->leafTupdesc, &isNull); // for index based on 1 key
+````
+
 
 
 #### 5) Planner
@@ -707,7 +749,7 @@ Datum penaltyRL(GISTENTERY* orig, GISTENTRY* add, float &penalty){
 
    状态向量包括 4 个分量: 面积增量、周长增量、重合面积增量、结点使用率。在 RLR-Tree 的实现中，树的结点类型 `RTree` 定义了 `Area()` 和 `Perimeter()` 方法。而其父类 `Rectangle` 提供了 `Set()` 和 `Include()` ，返回与其他 rectangle 进行操作后的新 rectangle。从而能计算出面积与周长的增量。
 
-   重合面积指的是，新结点插入至当前结点后，当前结点与同级兄弟结点的重叠面积。计算两个 rectangle 的重叠面积即可。
+   重合面积指的是，新结点插入至当前结点后，当前结点与同级的 $k$ 个兄弟结点的重叠面积，需要累加 $k - 1$ 个 rectangle 的重叠面积。
 
    结点使用率的定义式为: `node->entry_num / TreeNode::maximum_entry`.
 
@@ -766,8 +808,7 @@ g_cube_penalty(PG_FUNCTION_ARGS)
 	GISTENTRY  *newentry = (GISTENTRY *) PG_GETARG_POINTER(1);
 	float	   *result = (float *) PG_GETARG_POINTER(2);
 	NDBOX	   *ud;
-	double		tmp1,
-				tmp2;
+	double		tmp1, tmp2;
 
 	ud = cube_union_v0(DatumGetNDBOXP(origentry->key),
 					   DatumGetNDBOXP(newentry->key));
@@ -781,7 +822,11 @@ g_cube_penalty(PG_FUNCTION_ARGS)
 
 **🚩目标 1.2:** 以该函数为基础计算出其他三个分量，分别为周长增量、重合面积增量、结点使用率。
 
-​	**🚩目标 1.2.1:** 在此之前，我要先能运行到这个函数处，确保之前的假设都是正确的。这需要插入较多的数据，使得树的高度 >= 3. 我下载了 [Airline Sample Databse](https://postgrespro.com/docs/postgrespro/11/demodb-bookings-installation)，并按照它的指示创建了给定的数据库:
+遍历 `maxoff` 个子结点，按照面积变化的增量选出前 $k$ 个增量最少的子结点，然后计算这些子结点的其它 3 个属性。从而，每个子结点都会有 1 个 4 维的状态向量，输入到神经网络中，就能输出 penalty 值。
+
+所以，我们只需要为 `gist_penalty(6)` 加上 page 这个参数即可
+
+​	**✅ 目标 1.2.1:** 在此之前，我要先能运行到这个函数处，确保之前的假设都是正确的。这需要插入较多的数据，使得树的高度 >= 3. 我下载了 [Airline Sample Databse](https://postgrespro.com/docs/postgrespro/11/demodb-bookings-installation)，并按照它的指示创建了给定的数据库:
 
 ```bash
 $HOME/postgres/pg14/bin/psql -f /Users/shiqi/Downloads/demo-small-en-20170815.sql -U postgres
@@ -844,7 +889,7 @@ Referenced by:
 于是，我选定了 `airports_data` 中的 `coordinates` 属性。
 
 ```sql
-INSERT INTO airports_data VALUES('ZSQ', '{"en": "Seventeens Airport"}', '{"en": "Singapore"}', (point '(250.2, 125.1)'), 'Asia/China');
+INSERT INTO airports_data VALUES('SQ1', '{"en": "Seventeens Airport"}', '{"en": "Singapore"}', (point '(250.2, 125.1)'), 'Asia/China');
 ```
 
 然而在插入该元组时，程序还是直接跳到了叶子结点，可能是因为元组数量较少，而一个结点能容纳的元组数量却很多。因此，两层就可以装下所有的 90 多条数据结点，不需要内部结点，叶子结点就可以完成 GiST 树的构建。
@@ -912,7 +957,7 @@ COMMIT
 
 从而，编译整个项目的过程可以被解释为：先通过 `./configure` 定义安装位置及操作平台类型，生成 MakeFile 文件；接着 `make` 根据当前目录下的 makeFile，编译项目的源码，得到可执行的二进制文件，并进行链接操作，各个子目录下都产生了 `.o`, `.dylib` 的二进制文件；最后，通过 `make install` 将二进制文件复制到安装目录中，完成软件的安装。
 
-​	**🚩目标 1.2.2: 使用 gevel 调试 GiST 树，了解页面的数据结构分配** 
+​	**✅ 目标 1.2.2: 使用 gevel 调试 GiST 树，了解页面的数据结构分配** 
 
 在 `airports_data` 表中，我们首先试着以默认 `fillfacotr = 90` 建立 GiST 索引树：
 
@@ -969,7 +1014,7 @@ CREATE INDEX
 
 ChatGPT 推荐使用 `psycopg2` 来连接 PG 数据库并插入数据，明天再来试试。
 
-​	**🚩目标 1.2.3: 使用 psycopg2 连接 PG 数据库，写脚本增广数据**
+​	**✅ 目标 1.2.3: 使用 psycopg2 连接 PG 数据库，写脚本增广数据**
 
 在增加了 101 条数据后，表中有了 205 行，此时的 GiST 树已经多了一层，我们的目标已经达成，可以进行下一步的工作:
 
@@ -987,18 +1032,6 @@ demo=# select * from gist_stat('airports_data_coordinates_idx');
  Total size of leaf tuples: 9132 bytes +
  Total size of index:       24576 bytes+
 ```
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

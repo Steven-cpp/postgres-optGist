@@ -517,7 +517,7 @@ extern void gistdentryinit(GISTSTATE *giststate, int nkey, GISTENTRY *e,
 
 extern float gistpenalty(GISTSTATE *giststate, int attno,
 						 GISTENTRY *orig, bool isNullOrig,
-						 GISTENTRY *add, bool isNullAdd);
+						 GISTENTRY *add, bool isNullAdd, Page p);
 extern void gistMakeUnionItVec(GISTSTATE *giststate, IndexTuple *itvec, int len,
 							   Datum *attr, bool *isnull);
 extern bool gistKeyIsEQ(GISTSTATE *giststate, int attno, Datum a, Datum b);

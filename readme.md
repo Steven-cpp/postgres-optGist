@@ -51,7 +51,6 @@
    ./configure --prefix=$HOME/postgres/pg14 --enable-cassert \
    --enable-debug  CFLAGS="-ggdb -O0 -fno-omit-frame-pointer" CPPFLAGS="-g -O0"
    ```
-
    这些配置包括:
 
    - prefix - PostGres 的安装目录
@@ -78,7 +77,6 @@
    ```bash
    $HOME/postgres/pg14/bin/initdb -D $HOME/postgres/pgdata
    ```
-
    然后可以看到类似于下面的输出:
 
    > Success. You can now start the database server using:
@@ -100,7 +98,6 @@
    $HOME/postgres/pg14/bin/createdb -p 5432 sample
    $HOME/postgres/pg14/bin/psql -p 5432 sample
    ```
-
    我们现在应该登录到了 PG 中，我们可以尝试创建一个 `sample` 表并尝试一些查询
 
    ```sql

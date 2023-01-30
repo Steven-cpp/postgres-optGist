@@ -768,11 +768,6 @@ gistpenalty(GISTSTATE *giststate, int attno,
 	if (giststate->penaltyFn[attno].fn_strict == false ||
 		(isNullOrig == false && isNullAdd == false))
 	{
-		FunctionCall3Coll(&giststate->penaltyFn[attno],
-						  giststate->supportCollation[attno],
-						  PointerGetDatum(orig),
-						  PointerGetDatum(add),
-						  PointerGetDatum(&penalty));
 		// 1. Get merged box (the key insertion)
 		BOX* origbox = DatumGetBoxP(orig->key);
 		BOX* newbox = DatumGetBoxP(add->key); // new box is just a point
@@ -812,7 +807,8 @@ gistpenalty(GISTSTATE *giststate, int attno,
 		#define PAGESIZE	(BLCKSZ - MAXALIGN(sizeof(PageHeaderData) + sizeof(ItemIdData)))
 		utilRate = 1.0 - (float)PageGetFreeSpace(p)/PAGESIZE;
 		// 3. pass in state vector, get penalty
-		penalty = (float) box_penalty(origbox, newbox);
+		/* [TODO] Load CNN using ONNX Runtime */
+		
 		/* disallow negative or NaN penalty */
 		if (isnan(penalty) || penalty < 0.0)
 			penalty = 0.0;

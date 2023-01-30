@@ -4,7 +4,7 @@
 
 ![image-20230130172101269](https://raw.githubusercontent.com/Steven-cpp/myPhotoSet/main/image-20230130172101269.png)
 
-根据原作者在包含超过 1 亿多个空间对象的数据集中的实验，RLR-Tree 的相对 I/O 开销相比于 R-Tree 能够减少 $70\%$ 以上。
+根据原作者在包含超过 1 亿多个空间对象的数据集中的实验，RLR-Tree 的相对 I/O 开销相比于 R-Tree 减少了 $70\%$ 以上。
 
 ## Prerequisite Knowledge
 
@@ -76,13 +76,11 @@
 
    ```bash
    $HOME/postgres/pg14/bin/initdb -D $HOME/postgres/pgdata
+   
+   Success. You can now start the database server using:
+   /Users/me/postgres/pg14/bin/pg_ctl -D /Users/me/postgres/pgdata -l logfile start
    ```
-   然后可以看到类似于下面的输出:
-
-   > Success. You can now start the database server using:
-   >
-   > /Users/me/postgres/pg14/bin/pg_ctl -D /Users/me/postgres/pgdata -l logfile start
-
+   
 7. 现在我们就可以启动 PG 了
 
    ```bash

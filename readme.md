@@ -2,7 +2,7 @@
 
 这是我选的 Master Project，想要将 [RLR-Tree](https://arxiv.org/abs/2103.04541) 的索引树更新策略在 PostgreSQL (PG) 中的 R-Tree 中实现，从而能大大提高索引树的查询表现。
 
-![image-20230130171817852](https://raw.githubusercontent.com/Steven-cpp/myPhotoSet/main/image-20230130171817852.png)
+![image-20230130172101269](https://raw.githubusercontent.com/Steven-cpp/myPhotoSet/main/image-20230130172101269.png)
 
 根据原作者在包含超过 1 亿多个空间对象的数据集中的实验，RLR-Tree 的相对 I/O 开销相比于 R-Tree 能够减少 $70\%$ 以上。
 
@@ -47,7 +47,7 @@
 
 3. 为了配置如何 build 本项目，可以通过运行 `./configure` 文件来指定
 
-   ```
+   ```bash
    ./configure --prefix=$HOME/postgres/pg14 --enable-cassert \
    --enable-debug  CFLAGS="-ggdb -O0 -fno-omit-frame-pointer" CPPFLAGS="-g -O0"
    ```
@@ -89,10 +89,10 @@
 
    ```bash
    $HOME/postgres/pg14/bin/pg_ctl -D $HOME/postgres/pgdata -l logfile start
+   
+   waiting for server to start…. done
+   server started
    ```
-
-   > waiting for server to start…. done
-   > server started
 
 8. 最后，创建并打开一个数据库
 

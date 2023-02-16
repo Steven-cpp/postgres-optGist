@@ -1,8 +1,6 @@
 
 # Integrating RLR-Tree into PSql
 
-这是我的 master project，
-
 这是本项目的记录文档，包括相关知识的学习笔记、对于该项目各周期的进度记录，以及讨论的汇总。
 
 ## I. Paper Reading
@@ -318,7 +316,7 @@ GiST 的作者在[Generalized Search Trees for Database Systems](https://pages.c
 >
 >    $ 在 `placeToPage()` 中要求判断输入的 page 是否为叶子结点，也就是说明可以不在叶子结点插入元素。
 >
->    6. **为什么先删除旧结点，再写入新结点，而不是直接覆盖旧结点？**
+> 5. **为什么先删除旧结点，再写入新结点，而不是直接覆盖旧结点？**
 >
 >    $ 源码中的逻辑是判断当前结点是否被删除，如果已经被删除，就直接 fill 相应大小的区域；如果只是被标记为删除，就删除这个 tuple，再 fill 相应大小的区域。
 >
@@ -1035,9 +1033,21 @@ demo=# select * from gist_stat('airports_data_coordinates_idx');
 
 
 
+#### 3) gist_insert
 
+由于我要确认什么情况下需要计算 penalty 以及对哪些目标结点计算，根据 `gist_insert()` 的源码，可以发现：
 
+1. **何时计算 penalty**
 
+   只要插入需要经过 internal node，就一定会调用 `gist_choose()`，该操作需要返回最优的 tuple，这是通过计算每一个 tuple 的 penalty 实现的。也就是返回将该点插入到 tuple 中的面积增量.
+
+2. **对哪些结点计算 penalty**
+
+   internal node 中的每一个 tuple.
+
+所以，我需要更改的是 `gist_choose()` 函数，根据原有的 penalty_fn，对每一个 tuple 计算出 $\Delta S$，然后选出前 $2$ 个 tuple，计算出两者的状态向量，选出最优的 action，然后返回其 offsetNumber。
+
+源代码中还考虑到了建立在多个属性上的索引的情况，本实现暂不考虑。即本实现默认 `key = 0`.
 
 
 

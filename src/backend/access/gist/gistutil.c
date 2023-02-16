@@ -438,15 +438,20 @@ gistchoose(Relation r, Page p, IndexTuple it,	/* it has compressed entry */
 	maxoff = PageGetMaxOffsetNumber(p);
 	Assert(maxoff >= FirstOffsetNumber);
 
+	/**
+	 * 1. Calculate delta_s of each tuple, save lowest two to `offset_topk[]`, `deltaArea[]`
+	 * 2. Calculate other components, inc `deltaCircum[]`, `deltaOverlap[]`, `utilRate[]`
+	 *    Noted that the length of all these arrays should be equal to two.
+	 * 3. Concatenate the tensor and send it to action module, to get the best tupleId.
+	 */
 	for (i = FirstOffsetNumber; i <= maxoff; i = OffsetNumberNext(i))
 	{
 		IndexTuple	itup = (IndexTuple) PageGetItem(p, PageGetItemId(p, i));
 		bool		zero_penalty;
-		int			j;
+		int			j = 0;
 
 		zero_penalty = true;
 
-		/* Loop over index attributes. */
 		for (j = 0; j < IndexRelationGetNumberOfKeyAttributes(r); j++)
 		{
 			Datum		datum;
@@ -466,11 +471,11 @@ gistchoose(Relation r, Page p, IndexTuple it,	/* it has compressed entry */
 			gistdentryinit(giststate, j, &entry, datum, r, p, i,
 						   false, IsNull);
 			usize = gistpenalty(giststate, j, &entry, IsNull,
-								&identry[j], isnull[j], p);
+								&identry[j], isnull[j]);
 			if (usize > 0)
 				zero_penalty = false;
 
-			if (best_penalty[j] < 0 || usize < best_penalty[j])
+			if (best_penalty < 0 || usize < best_penalty[j])
 			{
 				/*
 				 * New best penalty for column.  Tentatively select this tuple
@@ -506,26 +511,6 @@ gistchoose(Relation r, Page p, IndexTuple it,	/* it has compressed entry */
 				 */
 				zero_penalty = false;	/* so outer loop won't exit */
 				break;
-			}
-		}
-
-		/*
-		 * If we looped past the last column, and did not update "result",
-		 * then this tuple is exactly as good as the prior best tuple.
-		 */
-		if (j == IndexRelationGetNumberOfKeyAttributes(r) && result != i)
-		{
-			if (keep_current_best == -1)
-			{
-				/* we didn't make the random choice yet for this old best */
-				keep_current_best = pg_prng_bool(&pg_global_prng_state) ? 1 : 0;
-			}
-			if (keep_current_best == 0)
-			{
-				/* we choose to use the new tuple */
-				result = i;
-				/* choose again if there are even more exactly-as-good ones */
-				keep_current_best = -1;
 			}
 		}
 
@@ -750,65 +735,28 @@ rt_box_intersect(BOX *n, const BOX *a, const BOX *b)
 
 /**
  * Calculate penalty of inserting `add` to `orig` using RLR-Tree method
+ * Only when no data 
  * 
  * @param giststate penaltyFn information needed for this op
  * @param orig 	entry to be inserted
  * @param add	insertion item
- * @param p		the page(node) `orig` lies in, used to retreive brother entries
  * 
  */
 float
 gistpenalty(GISTSTATE *giststate, int attno,
 			GISTENTRY *orig, bool isNullOrig,
-			GISTENTRY *add, bool isNullAdd,
-			Page p)
+			GISTENTRY *add, bool isNullAdd)
 {
 	float		penalty = 0.0;
 
 	if (giststate->penaltyFn[attno].fn_strict == false ||
 		(isNullOrig == false && isNullAdd == false))
 	{
-		// 1. Get merged box (the key insertion)
-		BOX* origbox = DatumGetBoxP(orig->key);
-		BOX* newbox = DatumGetBoxP(add->key); // new box is just a point
-		BOX  unionbox;
-		rt_box_union(&unionbox, origbox, newbox);
-		// 2. 	Calculate four component
-		float deltaArea, deltaCircum, deltaOverlap, utilRate;
-		float origLen = origbox->high.x - origbox->low.x;
-		float origHgt = origbox->high.y - origbox->low.y;
-		float unionLen = unionbox.high.x - unionbox.low.x;
-		float unionHgt = unionbox.high.y - unionbox.low.y;
-		// 2.1	delta area
-		/* [TODO] Multiplication Overflow Detection */
-		deltaArea = unionLen * unionHgt - origLen * origHgt;
-		// 2.2	delta circumference (just length + width for simplicity)
-		deltaCircum = unionLen - origLen + unionHgt - origHgt;
-		// 2.3 	delta overlap area
-		float origOlp = 0.0, unionOlp = 0.0;
-		for (OffsetNumber off = 0; off < PageGetMaxOffsetNumber(p); off++){
-			// 2.3.1 if brother tuple equals to orig, ignore
-			if (off == orig->offset) continue;
-			// 2.3.2 form `brobox` according to page and offset
-			ItemId iid = PageGetItemId(p, off);
-			IndexTuple broTuple = (IndexTuple) PageGetItem(p, iid);
-			bool isNull = false;
-			Datum datum = index_getattr(broTuple, 1, giststate->leafTupdesc, &isNull); // for index based on 1 key
-			BOX* brobox = DatumGetBoxP(datum);
-			// 2.3.3 accumulate origOverlap & unionOverlap
-			BOX origIntsctBox, unionIntsctBox;
-			rt_box_intersect(&origIntsctBox, origbox, brobox);
-			rt_box_intersect(&unionIntsctBox, &unionbox, brobox);
-			origOlp += (origIntsctBox.high.x - origIntsctBox.low.x) * (origIntsctBox.high.y - origIntsctBox.low.y);
-			unionOlp += (unionIntsctBox.high.x - unionIntsctBox.low.x) * (unionIntsctBox.high.y - unionIntsctBox.low.y);
-		}
-		deltaOverlap = unionOlp - origOlp;
-		// 2.4 	page utility rate
-		#define PAGESIZE	(BLCKSZ - MAXALIGN(sizeof(PageHeaderData) + sizeof(ItemIdData)))
-		utilRate = 1.0 - (float)PageGetFreeSpace(p)/PAGESIZE;
-		// 3. pass in state vector, get penalty
-		/* [TODO] Load CNN using ONNX Runtime */
-		
+		FunctionCall3Coll(&giststate->penaltyFn[attno],
+						  giststate->supportCollation[attno],
+						  PointerGetDatum(orig),
+						  PointerGetDatum(add),
+						  PointerGetDatum(&penalty));
 		/* disallow negative or NaN penalty */
 		if (isnan(penalty) || penalty < 0.0)
 			penalty = 0.0;

@@ -8,6 +8,7 @@
         "relcache.h": "c",
         "tupdesc.h": "c",
         "pg_attribute.h": "c",
-        "genbki.h": "c"
+        "genbki.h": "c",
+        "pg_opclass.h": "c"
     }
 }

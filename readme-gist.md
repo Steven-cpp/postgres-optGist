@@ -1075,4 +1075,6 @@ demo=# select * from gist_stat('airports_data_coordinates_idx');
 
 
 
+
+
  

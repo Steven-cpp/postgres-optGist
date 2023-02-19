@@ -14,6 +14,7 @@
 #include "postgres.h"
 
 #include <math.h>
+#include <string.h>
 
 #include "access/gist_private.h"
 #include "access/htup_details.h"
@@ -27,6 +28,12 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/geo_decls.h"
+
+/* Maximum num of tuples one node can hold */
+#define MAX_N_TUPLES 200
+/* K of top-k */
+#define K 2
+#define PAGESIZE	(BLCKSZ - MAXALIGN(sizeof(PageHeaderData) + sizeof(ItemIdData)))
 
 /*
  * Write itup vector to page, has no control of free space.
@@ -365,6 +372,15 @@ gistgetadjusted(Relation r, IndexTuple oldtup, IndexTuple addtup, GISTSTATE *gis
 	return newtup;
 }
 
+
+/**
+ * Comparison Operator to sort a float array in ascending order
+ */
+int compare(const void * a, const void * b) {
+    return (*(float*)a - *(float*)b);
+}
+
+
 /*
  * Search an upper index page for the entry with lowest penalty for insertion
  * of the new index key contained in "it".
@@ -380,7 +396,8 @@ gistchoose(Relation r, Page p, IndexTuple it,	/* it has compressed entry */
 	OffsetNumber result;
 	OffsetNumber maxoff;
 	OffsetNumber i;
-	float		best_penalty[INDEX_MAX_KEYS];
+	float		best_penalty = -1;
+	float		penalties[MAX_N_TUPLES], penalties_cpy[MAX_N_TUPLES];
 	GISTENTRY	entry,
 				identry[INDEX_MAX_KEYS]; 	   /* build an entry of `it` */
 	bool		isnull[INDEX_MAX_KEYS];
@@ -394,18 +411,6 @@ gistchoose(Relation r, Page p, IndexTuple it,	/* it has compressed entry */
 
 	/* we'll return FirstOffsetNumber if page is empty (shouldn't happen) */
 	result = FirstOffsetNumber;
-
-	/*
-	 * The index may have multiple columns, and there's a penalty value for
-	 * each column.  The penalty associated with a column that appears earlier
-	 * in the index definition is strictly more important than the penalty of
-	 * a column that appears later in the index definition.
-	 *
-	 * best_penalty[j] is the best penalty we have seen so far for column j,
-	 * or -1 when we haven't yet examined column j.  Array entries to the
-	 * right of the first -1 are undefined.
-	 */
-	best_penalty[0] = -1;
 
 	/*
 	 * If we find a tuple that's exactly as good as the currently best one, we
@@ -439,98 +444,88 @@ gistchoose(Relation r, Page p, IndexTuple it,	/* it has compressed entry */
 	Assert(maxoff >= FirstOffsetNumber);
 
 	/**
+	 * General ideas of reconstructing `gistchoose()`:
 	 * 1. Calculate delta_s of each tuple, save lowest two to `offset_topk[]`, `deltaArea[]`
 	 * 2. Calculate other components, inc `deltaCircum[]`, `deltaOverlap[]`, `utilRate[]`
 	 *    Noted that the length of all these arrays should be equal to two.
 	 * 3. Concatenate the tensor and send it to action module, to get the best tupleId.
 	 */
+	float offset_topK[K];
+	float deltaArea[K], deltaCircum[K], deltaOlp[K], utilRate[K];
+	int   indexId = 0;
+
+	// 1. Calculate delta_s for each tuple
 	for (i = FirstOffsetNumber; i <= maxoff; i = OffsetNumberNext(i))
 	{
 		IndexTuple	itup = (IndexTuple) PageGetItem(p, PageGetItemId(p, i));
-		bool		zero_penalty;
-		int			j = 0;
+		Datum		datum;
+		bool		IsNull;
 
-		zero_penalty = true;
-
-		for (j = 0; j < IndexRelationGetNumberOfKeyAttributes(r); j++)
-		{
-			Datum		datum;
-			float		usize;
-			bool		IsNull;
-
-			/** Compute penalty for this column.  
-			 * `datum`: key of the index entry
-			 * `identry`: entry of parent node (null, 0) 
-			 * `entry`: entry at (p, i) ; i starts from 1
-			 *  如果这样就可以完成 GiST 自上而下的遍历,那么遍历的要点是在offsetNum.
-			 * 每个page的不同offset,均对应一个tuple.
-			 * -> 可以假定每个page对应一个node
-			*/
-			datum = index_getattr(itup, j + 1, giststate->leafTupdesc,
-								  &IsNull);
-			gistdentryinit(giststate, j, &entry, datum, r, p, i,
-						   false, IsNull);
-			usize = gistpenalty(giststate, j, &entry, IsNull,
-								&identry[j], isnull[j]);
-			if (usize > 0)
-				zero_penalty = false;
-
-			if (best_penalty < 0 || usize < best_penalty[j])
-			{
-				/*
-				 * New best penalty for column.  Tentatively select this tuple
-				 * as the target, and record the best penalty.  Then reset the
-				 * next column's penalty to "unknown" (and indirectly, the
-				 * same for all the ones to its right).  This will force us to
-				 * adopt this tuple's penalty values as the best for all the
-				 * remaining columns during subsequent loop iterations.
-				 */
-				result = i;
-				best_penalty[j] = usize;
-
-				if (j < IndexRelationGetNumberOfKeyAttributes(r) - 1)
-					best_penalty[j + 1] = -1;
-
-				/* we have new best, so reset keep-it decision */
-				keep_current_best = -1;
-			}
-			else if (best_penalty[j] == usize)
-			{
-				/*
-				 * The current tuple is exactly as good for this column as the
-				 * best tuple seen so far.  The next iteration of this loop
-				 * will compare the next column.
-				 */
-			}
-			else
-			{
-				/*
-				 * The current tuple is worse for this column than the best
-				 * tuple seen so far.  Skip the remaining columns and move on
-				 * to the next tuple, if any.
-				 */
-				zero_penalty = false;	/* so outer loop won't exit */
-				break;
-			}
-		}
-
-		/*
-		 * If we find a tuple with zero penalty for all columns, and we've
-		 * decided we don't want to search for another tuple with equal
-		 * penalty, there's no need to examine remaining tuples; just break
-		 * out of the loop and return it.
-		 */
-		if (zero_penalty)
-		{
-			if (keep_current_best == -1)
-			{
-				/* we didn't make the random choice yet for this old best */
-				keep_current_best = pg_prng_bool(&pg_global_prng_state) ? 1 : 0;
-			}
-			if (keep_current_best == 1)
-				break;
-		}
+		datum = index_getattr(itup, indexId + 1, giststate->leafTupdesc, &IsNull);
+		gistdentryinit(giststate, indexId, &entry, datum, r, p, i, false, IsNull);
+		penalties[i - FirstOffsetNumber] = gistpenalty(giststate, indexId, &entry, IsNull, 
+													   &identry[indexId], isnull[indexId]);
 	}
+
+	// 2. Find and save lowest two to `offset_topk[]` and `deltaArea[]`
+	memcpy(penalties_cpy, penalties, sizeof(penalties));
+	qsort(penalties, maxoff + 1, sizeof(float), compare);
+	for (int i = 0; i < K; i++){
+		int j = 0;
+		while (penalties_cpy[j] != penalties[i]) j++;
+		offset_topK[i] = j + FirstOffsetNumber;
+		deltaArea[i] = penalties[i];
+	}
+
+	// 3. Calculate other components
+	for (int i = 0; i < K; i++){
+		// 3.1 Construct tuple entry, reading from disk page
+		int offset = offset_topK[i];
+		bool IsNull;
+		IndexTuple 	tup   = (IndexTuple) PageGetItem(p, PageGetItemId(p, offset));
+		Datum 		datum = index_getattr(tup, indexId + 1, giststate->leafTupdesc, &IsNull);
+		gistdentryinit(giststate, indexId, &entry, datum, r, p, i, false, IsNull);
+
+		// 3.2 Get merged box (after key insertion)
+		BOX* origbox = DatumGetBoxP(entry.key);
+		BOX* addbox = DatumGetBoxP(identry[indexId].key); // new box is just a point
+		BOX  unionbox;
+		rt_box_union(&unionbox, origbox, addbox);
+
+		// 3.3 Calculate deltaCircum
+		float origLen = origbox->high.x - origbox->low.x;
+		float origHgt = origbox->high.y - origbox->low.y;
+		float unionLen = unionbox.high.x - unionbox.low.x;
+		float unionHgt = unionbox.high.y - unionbox.low.y;
+		deltaCircum[i] = unionLen - origLen + unionHgt - origHgt;
+
+		// 3.4 Calculate deltaOlp: unionBox ^ broBox - origBox ^ broBox
+		float origOlp = 0.0, unionOlp = 0.0;
+		for (int j = 0; j < K; j++){
+			if (i == j) continue;
+			// 3.4.1 Construct brother box, reading from disk page
+			int offset = offset_topK[j];
+			IndexTuple 	tup   = (IndexTuple) PageGetItem(p, PageGetItemId(p, offset));
+			Datum 		datum = index_getattr(tup, indexId + 1, giststate->leafTupdesc, &IsNull);
+			gistdentryinit(giststate, indexId, &entry, datum, r, p, i, false, IsNull);
+			BOX* brobox = DatumGetBoxP(entry.key);
+
+			// 3.4.2 Intersect and calculate overlap
+			BOX origIntsctBox, unionIntsctBox;
+			rt_box_intersect(&origIntsctBox, origbox, brobox);
+			rt_box_intersect(&unionIntsctBox, &unionbox, brobox);
+			origOlp += (origIntsctBox.high.x - origIntsctBox.low.x) * (origIntsctBox.high.y - origIntsctBox.low.y);
+			unionOlp += (unionIntsctBox.high.x - unionIntsctBox.low.x) * (unionIntsctBox.high.y - unionIntsctBox.low.y);
+		}
+		deltaOlp[i] = unionOlp - origOlp;
+		
+		// 3.5 	page utility rate
+		utilRate[i] = 1.0 - (float)PageGetFreeSpace(p) / PAGESIZE;
+	}
+
+	// 4. Concatenate the tensor and send it to action module, get the best tupleId
+
+
 
 	return result;
 }

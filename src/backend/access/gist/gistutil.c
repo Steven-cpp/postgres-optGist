@@ -35,6 +35,24 @@
 #define K 2
 #define PAGESIZE	(BLCKSZ - MAXALIGN(sizeof(PageHeaderData) + sizeof(ItemIdData)))
 
+static void
+rt_box_union(BOX *n, const BOX *a, const BOX *b)
+{
+	n->high.x = float8_max(a->high.x, b->high.x);
+	n->high.y = float8_max(a->high.y, b->high.y);
+	n->low.x = float8_min(a->low.x, b->low.x);
+	n->low.y = float8_min(a->low.y, b->low.y);
+}
+
+static void
+rt_box_intersect(BOX *n, const BOX *a, const BOX *b)
+{
+	n->high.x = float8_min(a->high.x, b->high.x);
+	n->high.y = float8_min(a->high.y, b->high.y);
+	n->low.x = float8_max(a->low.x, b->low.x);
+	n->low.y = float8_max(a->low.y, b->low.y);
+}
+
 /*
  * Write itup vector to page, has no control of free space.
  */
@@ -450,7 +468,7 @@ gistchoose(Relation r, Page p, IndexTuple it,	/* it has compressed entry */
 	 *    Noted that the length of all these arrays should be equal to two.
 	 * 3. Concatenate the tensor and send it to action module, to get the best tupleId.
 	 */
-	float offset_topK[K];
+	int offset_topK[K];
 	float deltaArea[K], deltaCircum[K], deltaOlp[K], utilRate[K];
 	int   indexId = 0;
 
@@ -518,15 +536,12 @@ gistchoose(Relation r, Page p, IndexTuple it,	/* it has compressed entry */
 			unionOlp += (unionIntsctBox.high.x - unionIntsctBox.low.x) * (unionIntsctBox.high.y - unionIntsctBox.low.y);
 		}
 		deltaOlp[i] = unionOlp - origOlp;
-		
 		// 3.5 	page utility rate
 		utilRate[i] = 1.0 - (float)PageGetFreeSpace(p) / PAGESIZE;
 	}
 
-	// 4. Concatenate the tensor and send it to action module, get the best tupleId
-
-
-
+	/* 4. Concatenate the tensor and send it to action module, get the best tupleId */
+	
 	return result;
 }
 
@@ -708,24 +723,6 @@ gistFetchTuple(GISTSTATE *giststate, Relation r, IndexTuple tuple)
 	MemoryContextSwitchTo(oldcxt);
 
 	return heap_form_tuple(giststate->fetchTupdesc, fetchatt, isnull);
-}
-
-static void
-rt_box_union(BOX *n, const BOX *a, const BOX *b)
-{
-	n->high.x = float8_max(a->high.x, b->high.x);
-	n->high.y = float8_max(a->high.y, b->high.y);
-	n->low.x = float8_min(a->low.x, b->low.x);
-	n->low.y = float8_min(a->low.y, b->low.y);
-}
-
-static void
-rt_box_intersect(BOX *n, const BOX *a, const BOX *b)
-{
-	n->high.x = float8_min(a->high.x, b->high.x);
-	n->high.y = float8_min(a->high.y, b->high.y);
-	n->low.x = float8_max(a->low.x, b->low.x);
-	n->low.y = float8_max(a->low.y, b->low.y);
 }
 
 /**

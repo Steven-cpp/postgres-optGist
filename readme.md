@@ -2,7 +2,7 @@
 
 这是我选的 Master Project，想要将 [RLR-Tree](https://arxiv.org/abs/2103.04541) 的索引树更新策略在 PostgreSQL (PG) 中的 R-Tree 中实现，从而大大提高索引树的查询表现。
 
-![image-20230130172101269](https://raw.githubusercontent.com/Steven-cpp/myPhotoSet/main/image-20230130172101269.png)
+![image-20230130172101269](https://raw.githubusercontent.com/Steven-cpp/myPhotoSet/main/image-20230130172101269.png?token=GHSAT0AAAAAACIJ23MSQAU753I2IGWRJYZGZKDXRDA)
 
 根据原作者在包含超过 1 亿多个空间对象的数据集中的实验，RLR-Tree 的相对 I/O 开销相比于 R-Tree 减少了 $70\%$ 以上。
 
@@ -52,7 +52,6 @@
    --enable-debug  CFLAGS="-ggdb -O0 -fno-omit-frame-pointer" CPPFLAGS="-g -O0"
    ```
    这些配置包括:
-
    - prefix - PostGres 的安装目录
    - enable-debug - 以 Debug 模式 build 本项目
    - CFLAGS - C compiler flags
@@ -161,46 +160,3 @@
 > 先采用最为简单的方法进行实现，在计算其它三个分量前，先尝试对所有 tuple 插入该结点，并计算出面积增量。接着，对数组进行排序，选择前 $k$ 个最小的 tuple 计算分量。而且，为了规避判断条件的复杂性，这里取 $k = 2$ 。
 >
 > 这样实现之后，再对该算法的性能进行评估，如果没有提升的话，再考虑针对耗时的操作进行优化。
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

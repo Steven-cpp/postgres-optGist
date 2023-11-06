@@ -29,6 +29,7 @@ R-Tree 是用于对高维数据和地理数据 (例如坐标和矩形) 进行有
     				margin: 0 4em;
     				border-bottom: 1px solid #eee;' > 
 图1: R-Tree的示意图. 图a显示了一个三层的R-Tree, 它每个结点的最大指针数为3, 从而每个结点的可用指针数都不能小于3/2(即2). 而且, 只有叶子结点指向的才是实际的数据对象, 而且子结点完全包含在父结点中, 这一点从图b中可以见得.</div>
+R-Tree 是自下而上构建的，叶子结点逐渐聚合为更大的矩形，直到形成树的根节点。
 
 **搜索目标对象**
 
@@ -234,6 +235,8 @@ RLR-Tree 代码仓库中包含了 6 个 Python 文件和 2 个 C 文件，定义
 > 高效地阅读源码要求我们**自顶向下**地看这个项目，先了解业务流程，再理清执行流程，最后再深入到代码的每一行中。具体地，在需要阅读一个较大项目 (e.g 由多个文件组成，总代码行数 > 5k) 前，需要先充分了解这个代码的业务逻辑，即**要解决什么问题、有哪些功能、数据怎么交互的**。接下来，把代码跑起来，各种功能都用一下，了解他的执行逻辑（这里可以画出代码执行的流程图）。最后，再开始看源码，这样会容易上手很多。
 
 #### 1) GiST 的实现
+
+[Indexes in PostgreSQL](https://habr.com/en/companies/postgrespro/articles/444742/)
 
 GiST 的作者在[Generalized Search Trees for Database Systems](https://pages.cs.wisc.edu/~nil/764/Relat/8_vldb95-gist.pdf)介绍了 GiST 提出的背景、特点、与 B+树 和 R 树的不同、数据结构、实现方法、性能分析，同时作者还回顾了数据库中索引树的基本思想并强调了某些细节。这篇文章非常适合入门，对于后续理解索引树中的并行及 R 树的代码非常重要。
 
@@ -496,7 +499,9 @@ Concurrency control techniques are used to ensure that the *Isolation* (or non-i
 
 B+ trees have a higher branching factor: B+ trees typically have a higher branching factor than B trees (B-Tree can also have orders of 3, 4, 5, etc.), which means that they can store more keys per node. This can lead to fewer nodes in the tree, which can result in <u>faster search times</u> and <u>less overhead for tree maintenance operations</u>.
 
-And for B-Tree, the key is seperated across the entire tree, the internal node is also consists of keys. So, for the range query, B+ tree is much faster than B tree. Supposing one node of B-tree is consistent with the given range, then we still need to iterate through all its substrees, and push all the visited nodes into the result container. While for the B+ tree, it only needs to find the corresponding leaf node, and then append all these values into the result container.
+![B+Tree, all leaf nodes are in the same level](https://raw.githubusercontent.com/Steven-cpp/myPhotoSet/main/image-20230330102759908.png)
+
+And for B-Tree, the key is seperated across the entire tree, the internal node is also consists of keys. So, for the range query, B+ tree is much faster than B tree. Supposing one node of B-tree is consistent with the given range, then we still need to iterate through all its substrees, and push all the visited nodes into the result container. While for the B+ tree, it only needs to find the corresponding range, and then get the start and end of the linked_list, then iterate through it, which is much faster.
 
 
 
@@ -887,7 +892,7 @@ Referenced by:
 于是，我选定了 `airports_data` 中的 `coordinates` 属性。
 
 ```sql
-INSERT INTO airports_data VALUES('SQ1', '{"en": "Seventeens Airport"}', '{"en": "Singapore"}', (point '(250.2, 125.1)'), 'Asia/China');
+INSERT INTO airports_data VALUES('SQA', '{"en": "Seventeens Airport"}', '{"en": "Singapore"}', (point '(250.2, 125.1)'), 'Asia/China');
 ```
 
 然而在插入该元组时，程序还是直接跳到了叶子结点，可能是因为元组数量较少，而一个结点能容纳的元组数量却很多。因此，两层就可以装下所有的 90 多条数据结点，不需要内部结点，叶子结点就可以完成 GiST 树的构建。
@@ -939,7 +944,9 @@ CREATE FUNCTION
 COMMIT
 ```
 
-同时，在这一实验中，我也基本理解了 `make`, `makefile`, `cmake`, `make install` 的区别与意义：
+同时，在这一实验中，我也基本理解了 `make`, `makefile`, `cmake`, `make install` 的区别与意义，如下图所示：
+
+![image-20230227204552185](https://raw.githubusercontent.com/Steven-cpp/myPhotoSet/main/image-20230227204552185.png)
 
 - `make`: 就是根据 `makeFile` 将源代码编译为二进制文件，例如将 `main.c` 编译为 `main.o`。在此阶段，还会完成链接操作，例如对于头文件引用的解析，这可能会生成 `dylib` 文件。
 
@@ -949,7 +956,7 @@ COMMIT
   >
   > 
 
-- `cmake`: 它是生成 build system 的工具，而 `make` 是 build system，指导编译器如何 build 你的代码。例如我们可以通过 cmake 生成特定平台的 makeFile，从而使得源代码具有跨平台的特性。
+- `cmake`: 它是生成 build system 的工具，而 `make` 是 build system，通过输入的 `CMakeLists.txt` 指导编译器如何 build 你的代码。例如我们可以通过 cmake 生成特定平台的 makeFile，从而使得源代码具有跨平台的特性。
 
 - `make install`: 将编译好的二进制文件复制到目标安装位置，例如 `/bin` 目录.
 
@@ -1048,6 +1055,120 @@ demo=# select * from gist_stat('airports_data_coordinates_idx');
 所以，我需要更改的是 `gist_choose()` 函数，根据原有的 penalty_fn，对每一个 tuple 计算出 $\Delta S$，然后选出前 $2$ 个 tuple，计算出两者的状态向量，选出最优的 action，然后返回其 offsetNumber。
 
 源代码中还考虑到了建立在多个属性上的索引的情况，本实现暂不考虑。即本实现默认 `key = 0`.
+
+### 6. ONNX Runtime
+
+为了将 Pytorch 模型部署到 C 代码中，这里考虑通过 ONNX Runtime 加载预训练好的神经网络，作为 action module。
+
+[参考: 使用 ONNX Runtime 将 Pytorch 模型部署至 C++ 应用中](https://medium.com/@freshtechyy/deploying-pytorch-model-into-a-c-application-using-onnx-runtime-f9967406564b)
+
+Open Neural Network eXchange（ONNX）是一种用于存储预训练模型的文件格式。它允许各种 AI 框架以相同的格式存取。而 ONNX Runtime 是一个跨平台的机器学习模型加速器，它具有灵活的接口，可以集成特定的硬件库。ONNX Runtime能够使用多种硬件执行神经网络模型，如 CPU、CUDA 和 TensorRT 等。它还可以兼容多种模型，如 PyTorch、Tensorflow/Keras、TFLite、scikit-learn等。
+
+我们可以利用 ONNX Runtime (ORT) 将预先训练好的 PyTorch 模型部署到 C++ 应用程序中进行推断，如下图所示：
+
+![image-20230221144131233](https://raw.githubusercontent.com/Steven-cpp/myPhotoSet/main/image-20230221144131233.png)
+
+#### 1）模型导出为 ONNX 文件格式
+
+由于 ORT 只能接受 `.onnx` 的文件格式，因此需要先将 PyTorch 中预训练得到的 `.pth` 模型文件转换为该格式。我们可以在 Pytorch 中实现这一转换：
+
+```python
+# 1. Define the model
+net = Model()
+net.cuda()
+
+# 2. Load pretrained model file
+PATH = 'model.pth'
+net.load_state_dict(torch.load(PATH))
+net.eval()
+
+# 3. Give shape-matched input, init the model, and then export
+x = torch.randn((1, 3, 32, 32)).cuda()
+torch.onnx.export(net,       # model being run       
+                  x,         # model input
+                  "model.onnx",  # where to save the model
+                  export_params=True, # store the trained weights
+                  opset_version=11,   # the ONNX version
+                  do_constant_folding=True,
+                  input_names= ['input'], # set model input names    
+                  output_names=['output'], # set model output names
+)
+```
+
+#### 2）使用 ORT 进行推断
+
+接下来，就可以在 PG 中使用导出的 Pytorch 模型了。这包括了两个步骤：
+
+1. **初始化**
+
+   创建 ORT 的运行环境，ORT Session，并设定其参数，包括模型输入/输出的个数、类型、形状以及名字。
+
+   ```c
+   OrtEnv* env;
+   OrtCreateEnv(ORT_LOGGING_LEVEL_WARNING, "test", &env);
+   OrtSessionOptions* session_options;
+   OrtCreateSessionOptions(&session_options);
+   OrtSession* session;
+   OrtCreateSession(env, "model.onnx", session_options, &session);
+   ```
+
+2. **推断**
+
+   创建输入、输出向量，并分配内存，接着通过 `OrtRun()` 传入上述的所有参数，即可完成推断过程。
+
+   ```c
+   // Create an input tensor object
+       OrtMemoryInfo* input_tensor_info;
+       OrtCreateCpuMemoryInfo(OrtDeviceAllocator, OrtMemTypeCPU, &input_tensor_info);
+       OrtValue* input_tensor;
+       OrtCreateTensorWithDataAsOrtValue(input_tensor_info, input_data, sizeof(float) * 1 * 3 * 224 * 224, input_shape, 4, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &input_tensor);
+   
+       // Pass the input tensor through the ONNX model to get the output tensor
+       char* input_name = OrtSessionGetInputName(session, 0, input_tensor_info);
+       char* output_name = OrtSessionGetOutputName(session, 0, input_tensor_info);
+       OrtValue* output_tensor;
+       OrtRunOptions* run_options;
+       OrtCreateRunOptions(&run_options);
+       OrtRun(session, run_options, input_name, &input_tensor, 1, &output_name, 1, &output_tensor);
+   ```
+
+3. **处理输出向量**
+
+   由于上一步创建的输入、输出向量都是 `OrtValue` 的类型，不便于读取，还需要通过 `OrtGetTensorMutableData()` 将其转为基本数据类型（例如 `float`）：
+
+   ```c
+   // Process the output tensor to obtain the predicted class
+   float* output_data;
+   OrtGetTensorMutableData(output_tensor, (void**)&output_data);
+   int predicted_class = 0;
+   float max_score = -1;
+   for (int i = 0; i < 5; i++) { // assuming there are 5 classes
+     if (output_data[i] > max_score) {
+       predicted_class = i;
+       max_score = output_data[i];
+     }
+   }
+   ```
+
+   上面给出了一个 5-分类问题的示例代码。
+
+基于上述几个步骤，我们就可以定义得到 PG 中的 Action Module.
+
+#### 3）安装 ORT 至 PG 项目中
+
+现在的问题就是如何将 ORT 的框架整合至本项目中，并且完成编译。经过一系列毫无方向的探索，我想不如从理论出发，看从 C++ 项目的通用编译过程上，如何实现这样的一个操作。于是，我想到可以有 2 种方式：
+
+1. **与 PG 源码一起编译**
+
+   可以通过将 ORT 的源码 copy 至 PG 的运行目录，然后结合 ORT 的 `cmakeLists.txt` 修改 PG 的各种 `makeFile`。但由于 `cmakeLists` 与 `makeFile` 语法不同，因此难以进行对应。于是，我只好考虑另一种方法。
+
+2. **将 ORT 作为链接库**
+
+   直接下载编译好的 ORT，然后只要在 `make` 时指定链接到对应的 lib 即可。可以参考 [Compiling and Linking with Installed Libraries](http://vis.cs.brown.edu/resources/doc/gfxtools-docs/using-installed-libs.html).
+
+
+
+
 
 
 

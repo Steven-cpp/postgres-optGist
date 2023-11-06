@@ -496,7 +496,7 @@ gistchoose(Relation r, Page p, IndexTuple it,	/* it has compressed entry */
 	}
 
 	// 3. Calculate other components
-	for (int i = 0; i < K; i++){
+	for (int i = 0; i < 2; i++){
 		// 3.1 Construct tuple entry, reading from disk page
 		int offset = offset_topK[i];
 		bool IsNull;
@@ -519,7 +519,7 @@ gistchoose(Relation r, Page p, IndexTuple it,	/* it has compressed entry */
 
 		// 3.4 Calculate deltaOlp: unionBox ^ broBox - origBox ^ broBox
 		float origOlp = 0.0, unionOlp = 0.0;
-		for (int j = 0; j < K; j++){
+		for (int j = 0; j < 2; j++){
 			if (i == j) continue;
 			// 3.4.1 Construct brother box, reading from disk page
 			int offset = offset_topK[j];
